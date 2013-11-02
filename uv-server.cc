@@ -82,6 +82,15 @@ static void after_read(uv_stream_t* stream, ssize_t nread, const uv_buf_t* buf) 
 		return;
 	}
 	
+	if (strncmp(buf->base, "exit", 4) == 0) {
+		if (buf->base) {
+			free(buf->base);
+		}
+		printf("received 'exit'\n");
+		uv_close((uv_handle_t*)&client->handle, on_close);
+		return;
+	}
+	
     write_req *wr = (write_req*)malloc(sizeof(write_req));
 	char str[512];
 	sprintf(str, "Hello World [%d]\n", client->clientnum);
