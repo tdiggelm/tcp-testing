@@ -1,0 +1,3 @@
+[submodule "yyincremental"]
+	path = yyincremental
+	url = https://github.com/tdiggelm/yyincremental.git
