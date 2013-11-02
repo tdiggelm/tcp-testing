@@ -19,8 +19,6 @@
  * IN THE SOFTWARE.
  */
 
-//#define DEBUG_ECHO_ONLY
-
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -30,10 +28,8 @@
 #define UVERR(err, msg) fprintf(stderr, "%s: %s\n", msg, uv_strerror(err))
 
 typedef struct {
-	//uv_shutdown_t shutdown_req;
 	uv_tcp_t handle;
 	int clientnum;
-	//cmd_parser_t parser;
 } client_rec;
 
 typedef struct {
@@ -58,11 +54,6 @@ static void after_write(uv_write_t* req, int status) {
 	
 	if (status) UVERR(status, "after_write");
 }
-
-/*static void after_shutdown(uv_shutdown_t* req, int status) {
-	client_rec* client = container_of(req, client_rec, shutdown_req);
-	uv_close((uv_handle_t*)&client->handle, on_close);
-}*/
 
 static void on_close(uv_handle_t* handle) {
     client_rec* client = (client_rec*)handle;
