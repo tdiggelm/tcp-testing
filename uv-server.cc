@@ -19,6 +19,8 @@
  * IN THE SOFTWARE.
  */
 
+// TODO: daemonizing server => http://www.itp.uzh.ch/~dpotter/howto/daemonize
+
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
