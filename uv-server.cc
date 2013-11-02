@@ -34,7 +34,6 @@ class intparser;
 typedef struct {
 	uv_tcp_t handle;
 	intparser* parser;
-	int clientnum;
 } client_rec;
 
 typedef struct {
@@ -42,7 +41,6 @@ typedef struct {
     uv_buf_t buf;
 } write_req;
 
-static int _clientnum = 0;
 static uv_loop_t* _loop;
 static uv_tcp_t _tcpServer;
 
@@ -58,12 +56,14 @@ public:
 		: stream(stream)
 	{}
 	
-	void foundint(long int num)
+	void write(const char* str)
+	{
+		write(str, strlen(str));
+	}
+	
+	void write(const char* str, size_t len)
 	{
 		write_req *wr = (write_req*)malloc(sizeof(write_req));
-		char str[512];
-		sprintf(str, "@@@ found int: %ld\n", num);
-		int len = strlen(str);
 		wr->buf = uv_buf_init((char*)malloc(len), len);
 		memcpy(wr->buf.base, str, len);
 		if (uv_write(&wr->req, stream, &wr->buf, 1, after_write)) {
@@ -72,18 +72,18 @@ public:
 	    }
 	}
 	
+	void foundint(long int num)
+	{
+		char str[512];
+		sprintf(str, "@@@ found int: %ld\n", num);
+		write(str);
+	}
+	
 	void error(const char* msg)
 	{
-		write_req *wr = (write_req*)malloc(sizeof(write_req));
 		char str[512];
 		sprintf(str, "-ERR %s\n", msg);
-		int len = strlen(str);
-		wr->buf = uv_buf_init((char*)malloc(len), len);
-		memcpy(wr->buf.base, str, len);
-		if (uv_write(&wr->req, stream, &wr->buf, 1, after_write)) {
-			fprintf(stderr, "uv_write failed\n");
-	  		assert(!"uv_write failed");
-	    }
+		write(str);
 	}
 	
 private:
@@ -101,7 +101,6 @@ static void after_write(uv_write_t* req, int status) {
 
 static void on_close(uv_handle_t* handle) {
     client_rec* client = (client_rec*)handle;
-	_clientnum--;
 	delete client->parser;
     free(client);
 }
@@ -135,7 +134,7 @@ static void after_read(uv_stream_t* stream, ssize_t nread, const uv_buf_t* buf) 
 		//assert(nread == UV_EOF);
 		
 		if (nread == UV_EOF) {
-			printf("EOF\n");
+			printf("client disconnects\n");
 		} else {
 			UVERR(nread, "after_read");	
 		}
@@ -152,20 +151,6 @@ static void after_read(uv_stream_t* stream, ssize_t nread, const uv_buf_t* buf) 
 		uv_close((uv_handle_t*)&client->handle, on_close);
 		return;
 	}
-	
-    /*write_req *wr = (write_req*)malloc(sizeof(write_req));
-	char str[512];
-	sprintf(str, "Hello World [%d]\n", client->clientnum);
-	int len = strlen(str);
-	wr->buf = uv_buf_init((char*)malloc(len), len);
-	memcpy(wr->buf.base, str, len);
-	if (uv_write(&wr->req, (uv_stream_t*)&client->handle, &wr->buf, 1, after_write)) {
-		fprintf(stderr, "uv_write failed\n");
-  		assert(!"uv_write failed");
-   	}*/
-
-	//printf("feed:\n");
-	//hexdump(buf->base, nread);
 	
 	client->parser->feed(buf->base, nread);
 	client->parser->parse();
@@ -189,8 +174,6 @@ static void on_connection(uv_stream_t* server, int status) {
 	assert(status == 0);
 
 	client_rec* client = (client_rec*)malloc(sizeof (client_rec));
-	client->clientnum = _clientnum++;
-	
 	assert(client != NULL);
 
     r = uv_tcp_init(_loop, &client->handle);
@@ -200,6 +183,7 @@ static void on_connection(uv_stream_t* server, int status) {
 	assert(r == 0);
 	
 	client->parser = new intparser((uv_stream_t*)&client->handle);
+	assert(client->parser != NULL);
 	
 	r = uv_read_start((uv_stream_t*)&client->handle, on_alloc, after_read);
 	assert(r == 0);
