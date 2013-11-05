@@ -20,8 +20,9 @@
  */
 
 // TODO: daemonizing server => http://www.itp.uzh.ch/~dpotter/howto/daemonize
-// TODO: closing connection: uv_shutdown then close connection in cb to allow buffers
+// TODO: ?? closing connection: uv_shutdown then close connection in cb to allow buffers
 //		 to be written out to client before closing connection
+// TODO: investigate possible mem-leak when stressing server with random data
 
 #include <assert.h>
 #include <stdio.h>
@@ -54,8 +55,8 @@ static void on_connection(uv_stream_t*, int status);
 class intparser : public parser
 {
 public:
-	intparser(uv_stream_t* stream)
-		: stream(stream)
+	intparser(client_rec* client)
+		: client(client)
 	{}
 	
 	void write(const char* str)
@@ -65,13 +66,25 @@ public:
 	
 	void write(const char* str, size_t len)
 	{
+		int ret;
 		write_req *wr = (write_req*)malloc(sizeof(write_req));
 		wr->buf = uv_buf_init((char*)malloc(len), len);
 		memcpy(wr->buf.base, str, len);
-		if (uv_write(&wr->req, stream, &wr->buf, 1, after_write)) {
-			fprintf(stderr, "uv_write failed\n");
-	  		assert(!"uv_write failed");
+		if ((ret = uv_write(&wr->req, (uv_stream_t*)&client->handle, &wr->buf, 1, after_write))) {
+			UVERR(ret, "uv_write failed");
+			free(wr->buf.base);
+			free(wr);
 	    }
+	}
+	
+	void quit()
+	{
+		fprintf(stderr, "client is quitting...\n");
+		
+		// close if not already closing
+		if (!uv_is_closing((uv_handle_t*)&client->handle)) {
+			uv_close((uv_handle_t*)&client->handle, on_close);
+		}
 	}
 	
 	void foundint(long int num)
@@ -89,7 +102,7 @@ public:
 	}
 	
 private:
-	uv_stream_t* stream;
+	client_rec* client;
 };
 
 static void after_write(uv_write_t* req, int status) {
@@ -133,23 +146,12 @@ static void after_read(uv_stream_t* stream, ssize_t nread, const uv_buf_t* buf) 
 			free(buf->base);
 		}
 		
-		//assert(nread == UV_EOF);
-		
 		if (nread == UV_EOF) {
 			printf("client disconnects\n");
 		} else {
 			UVERR(nread, "after_read");	
 		}
 		
-		uv_close((uv_handle_t*)&client->handle, on_close);
-		return;
-	}
-	
-	if (strncmp(buf->base, "exit", 4) == 0) {
-		if (buf->base) {
-			free(buf->base);
-		}
-		printf("received 'exit'\n");
 		uv_close((uv_handle_t*)&client->handle, on_close);
 		return;
 	}
@@ -168,7 +170,7 @@ static void on_alloc(uv_handle_t* handle, size_t suggested_size, uv_buf_t* buf) 
 }
 
 static void on_connection(uv_stream_t* server, int status) {
-	int r;
+	int ret;
 	
 	uv_loop_t* loop = uv_default_loop();
 	
@@ -180,17 +182,17 @@ static void on_connection(uv_stream_t* server, int status) {
 	client_rec* client = (client_rec*)malloc(sizeof (client_rec));
 	assert(client != NULL);
 
-    r = uv_tcp_init(loop, &client->handle);
-    assert(r == 0);
+    ret = uv_tcp_init(loop, &client->handle);
+    assert(ret == 0);
 
-	r = uv_accept(server, (uv_stream_t*)&client->handle);
-	assert(r == 0);
+	ret = uv_accept(server, (uv_stream_t*)&client->handle);
+	assert(ret == 0);
 	
-	client->parser = new intparser((uv_stream_t*)&client->handle);
+	client->parser = new intparser(client);
 	assert(client->parser != NULL);
 	
-	r = uv_read_start((uv_stream_t*)&client->handle, on_alloc, after_read);
-	assert(r == 0);
+	ret = uv_read_start((uv_stream_t*)&client->handle, on_alloc, after_read);
+	assert(ret == 0);
 }
 
 void usage() {
@@ -226,7 +228,7 @@ int main(int argc, char **argv) {
 
 		switch (c)
 		{
-			case 's': socket = (char*)malloc(strlen(optarg)); strcpy(socket, optarg); break;
+			case 's': socket = optarg; break;
 			case 'p': port = atoi(optarg); break;
 			case 'h':
 			default: usage(); exit(1);
@@ -246,31 +248,28 @@ int main(int argc, char **argv) {
 	// server from exiting
 	signal(SIGPIPE, SIG_IGN);
 	
-	int r;
+	int ret;
 
 	if (port)
 	{
 		struct sockaddr_in addr;
 		assert(0 == uv_ip4_addr("0.0.0.0", 3000, &addr));
 
-		r = uv_tcp_init(loop, &tcpServer);
-		if (r) {
+		if ((ret = uv_tcp_init(loop, &tcpServer))) {
 			/* TODO: Error codes */
-			UVERR(r, "Socket creation error");
+			UVERR(ret, "Socket creation error");
 			return 1;
 		}
 
-		r = uv_tcp_bind(&tcpServer, (const struct sockaddr*) &addr);
-		if (r) {
+		if ((ret = uv_tcp_bind(&tcpServer, (const struct sockaddr*) &addr))) {
 			/* TODO: Error codes */
-			UVERR(r, "Bind error");
+			UVERR(ret, "Bind error");
 			return 1;
 		}
 
-		r = uv_listen((uv_stream_t*)&tcpServer, SOMAXCONN, on_connection);
-		if (r) {
+		if ((ret = uv_listen((uv_stream_t*)&tcpServer, SOMAXCONN, on_connection))) {
 			/* TODO: Error codes */
-			UVERR(r, "Listen error");
+			UVERR(ret, "Listen error");
 			return 1;
 		}
 		
@@ -280,24 +279,23 @@ int main(int argc, char **argv) {
 	if (socket)
 	{
 		// remove socket file if already existing
+		// don't care if it failes
 		remove(socket);
 		
-		r = uv_pipe_init(loop, &pipe, 0);
-		if (r) {
+		if ((ret = uv_pipe_init(loop, &pipe, 0))) {
 			/* TODO: Error codes */
-			UVERR(r, "Pipe creation error");
+			UVERR(ret, "Pipe creation error");
 			return 1;
 		}
 		
-		if (uv_pipe_bind(&pipe, socket)) {
-	        UVERR(r, "Pipe bind error");
+		if ((ret = uv_pipe_bind(&pipe, socket))) {
+	        UVERR(ret, "Pipe bind error");
 	        return 1;
 	    }
 	
-		r = uv_listen((uv_stream_t*)&pipe, SOMAXCONN, on_connection);
-		if (r) {
+		if ((ret = uv_listen((uv_stream_t*)&pipe, SOMAXCONN, on_connection))) {
 			/* TODO: Error codes */
-			UVERR(r, "Listen error");
+			UVERR(ret, "Listen error");
 			return 1;
 		}
 		
