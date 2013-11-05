@@ -22,7 +22,7 @@
 // TODO: daemonizing server => http://www.itp.uzh.ch/~dpotter/howto/daemonize
 // TODO: ?? closing connection: uv_shutdown then close connection in cb to allow buffers
 //		 to be written out to client before closing connection
-// TODO: investigate possible mem-leak when stressing server with random data
+// TODO: gracefully exit server on i.e. SIGINT (valgrind debugging)
 
 #include <assert.h>
 #include <stdio.h>
