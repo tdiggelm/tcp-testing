@@ -20,6 +20,8 @@
  */
 
 // TODO: daemonizing server => http://www.itp.uzh.ch/~dpotter/howto/daemonize
+// TODO: closing connection: uv_shutdown then close connection in cb to allow buffers
+//		 to be written out to client before closing connection
 
 #include <assert.h>
 #include <stdio.h>
@@ -27,6 +29,7 @@
 #include <string.h>
 #include <ctype.h>
 #include <uv.h>
+#include <getopt.h>
 #include "yyincremental/parser.h"
 
 #define UVERR(err, msg) fprintf(stderr, "%s: %s\n", msg, uv_strerror(err))
@@ -42,9 +45,6 @@ typedef struct {
     uv_write_t req;
     uv_buf_t buf;
 } write_req;
-
-static uv_loop_t* _loop;
-static uv_tcp_t _tcpServer;
 
 static void after_write(uv_write_t* req, int status);
 static void after_read(uv_stream_t*, ssize_t nread, const uv_buf_t* buf);
@@ -170,6 +170,8 @@ static void on_alloc(uv_handle_t* handle, size_t suggested_size, uv_buf_t* buf) 
 static void on_connection(uv_stream_t* server, int status) {
 	int r;
 	
+	uv_loop_t* loop = uv_default_loop();
+	
 	if (status != 0) {
 		fprintf(stderr, "Connect error %s\n", uv_err_name(status));
 	}
@@ -178,7 +180,7 @@ static void on_connection(uv_stream_t* server, int status) {
 	client_rec* client = (client_rec*)malloc(sizeof (client_rec));
 	assert(client != NULL);
 
-    r = uv_tcp_init(_loop, &client->handle);
+    r = uv_tcp_init(loop, &client->handle);
     assert(r == 0);
 
 	r = uv_accept(server, (uv_stream_t*)&client->handle);
@@ -191,42 +193,118 @@ static void on_connection(uv_stream_t* server, int status) {
 	assert(r == 0);
 }
 
-int main() {
-	printf("listening on port 3000...\n");
-                         
+void usage() {
+	printf(
+		"usage: uv-server [OPTION ...]\n"
+		"   --help, -h			display this help message\n"
+		"   --socket, -s SOCK_FILE	listening on socket SOCK_FILE\n"
+		"   --port, -p PORT		listening on PORT (0 disables tcp socket)\n"
+	);
+}
+
+int main(int argc, char **argv) {
+	int port = 3000;
+	char* socket = NULL;
+
+	int c;
+	while (1)
+	{
+		static struct option long_options[] = {
+			{"help",	no_argument,		0,	'h'},
+			{"socket",	required_argument,	0,	's'},
+			{"port",	required_argument,	0,	'p'},
+			{0, 0, 0, 0}
+		};
+		
+		/* getopt_long stores the option index here. */
+		int option_index = 0;
+
+		c = getopt_long (argc, argv, "s:p:h", long_options, &option_index);
+
+		/* Detect the end of the options. */
+		if (c == -1) break;
+
+		switch (c)
+		{
+			case 's': socket = (char*)malloc(strlen(optarg)); strcpy(socket, optarg); break;
+			case 'p': port = atoi(optarg); break;
+			case 'h':
+			default: usage(); exit(1);
+		}
+	}
+	
+	if (socket == NULL && port == 0) {
+		fprintf(stderr, "fatal: server has no endpoint.\n");
+		exit(1);
+	}
+
+	uv_loop_t* loop = uv_default_loop();
+	uv_tcp_t tcpServer;
+	uv_pipe_t pipe;
+
 	// ignore sigpipe (client exits before write completes) to prevenet
 	// server from exiting
 	signal(SIGPIPE, SIG_IGN);
-	                   
-	_loop = uv_default_loop();
-
-	struct sockaddr_in addr;
+	
 	int r;
 
-	assert(0 == uv_ip4_addr("0.0.0.0", 3000, &addr));
+	if (port)
+	{
+		struct sockaddr_in addr;
+		assert(0 == uv_ip4_addr("0.0.0.0", 3000, &addr));
 
-	r = uv_tcp_init(_loop, &_tcpServer);
-	if (r) {
-		/* TODO: Error codes */
-		fprintf(stderr, "Socket creation error\n");
-		return 1;
+		r = uv_tcp_init(loop, &tcpServer);
+		if (r) {
+			/* TODO: Error codes */
+			UVERR(r, "Socket creation error");
+			return 1;
+		}
+
+		r = uv_tcp_bind(&tcpServer, (const struct sockaddr*) &addr);
+		if (r) {
+			/* TODO: Error codes */
+			UVERR(r, "Bind error");
+			return 1;
+		}
+
+		r = uv_listen((uv_stream_t*)&tcpServer, SOMAXCONN, on_connection);
+		if (r) {
+			/* TODO: Error codes */
+			UVERR(r, "Listen error");
+			return 1;
+		}
+		
+		printf("listening on port %d...\n", port);
+	}
+	
+	if (socket)
+	{
+		// remove socket file if already existing
+		remove(socket);
+		
+		r = uv_pipe_init(loop, &pipe, 0);
+		if (r) {
+			/* TODO: Error codes */
+			UVERR(r, "Pipe creation error");
+			return 1;
+		}
+		
+		if (uv_pipe_bind(&pipe, socket)) {
+	        UVERR(r, "Pipe bind error");
+	        return 1;
+	    }
+	
+		r = uv_listen((uv_stream_t*)&pipe, SOMAXCONN, on_connection);
+		if (r) {
+			/* TODO: Error codes */
+			UVERR(r, "Listen error");
+			return 1;
+		}
+		
+		printf("listening on socket '%s'...\n", socket);
 	}
 
-	r = uv_tcp_bind(&_tcpServer, (const struct sockaddr*) &addr);
-	if (r) {
-		/* TODO: Error codes */
-		fprintf(stderr, "Bind error\n");
-		return 1;
-	}
-
-	r = uv_listen((uv_stream_t*)&_tcpServer, SOMAXCONN, on_connection);
-	if (r) {
-		/* TODO: Error codes */
-		fprintf(stderr, "Listen error %s\n", uv_err_name(r));
-		return 1;
-	}
-
-	uv_run(_loop, UV_RUN_DEFAULT);
+	uv_run(loop, UV_RUN_DEFAULT);
 
 	return 0;
 }
