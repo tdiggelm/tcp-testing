@@ -90,7 +90,7 @@ public:
 	void foundint(long int num)
 	{
 		char str[512];
-		sprintf(str, "@@@ found int: %ld\n", num);
+		sprintf(str, ":%ld\n", num);
 		write(str);
 	}
 	
@@ -155,6 +155,12 @@ static void after_read(uv_stream_t* stream, ssize_t nread, const uv_buf_t* buf) 
 		uv_close((uv_handle_t*)&client->handle, on_close);
 		return;
 	}
+	
+#ifdef DEBUG
+	printf("\n@@@ BEGIN REQUEST @@@\n");
+	hexdump(buf->base, nread);
+	printf("@@@ END REQUEST @@@\n");
+#endif
 	
 	client->parser->feed(buf->base, nread);
 	client->parser->parse();
